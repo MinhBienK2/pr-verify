@@ -6,10 +6,11 @@ Một FAIL là một *lời khẳng định* cho tới khi tái hiện được.
 
 | Loại | Dấu hiệu | Xử lý |
 |---|---|---|
-| **Sản phẩm** | Tái hiện được bằng tay/lệnh một dòng; ngược oracle; khác nhánh đích theo hướng xấu | `issue` `open`, kèm bước tái hiện + `file:line` nghi ngờ → Fix |
+| **Sản phẩm** | Tái hiện được bằng tay/lệnh một dòng; ngược oracle; khác nhánh đích theo hướng xấu | `issue` `open`, kèm `repro` + `suspect` (bước tái hiện + `file:line` nghi ngờ) → Fix |
 | **Có sẵn ở nhánh đích** | Phía base cũng hỏng y hệt (cần chạy phía base để biết) | `issue` `out-of-scope`, `reason: "pre-existing"`, đưa vào mục rủi ro của báo cáo; chỉ sửa khi user đồng ý |
 | **Harness** | Selector sai, chờ chưa đủ, oracle chép tay, đọc nhầm output, file tạm dùng chung giữa tiến trình | Sửa harness, ghi lại `result` cho tiêu chí đó trong **cùng vòng** (bản ghi sau cùng của vòng được tính) |
 | **Môi trường** | App chết/OOM, tunnel rớt, dữ liệu test thiếu, cổng bận | Sửa môi trường, chạy lại cùng vòng; BLOCKED chỉ khi không tự sửa được, `note` nêu lý do |
+| **Không có môi trường test** | Không tồn tại app/DB test để chạy tiêu chí này, và user đã duyệt bỏ qua | `result` với `verdict: "SKIP"`, `approved_by_user` là trích lời user, `note` nêu lý do. **Không dùng cho tiêu chí `baseline`** (tiêu chí đó luôn cần ảnh "before" thật) |
 | **Cần quyết định** | Spec cho phép hai cách hiểu | `issue` `needs-decision`, hỏi user theo mốc ở SKILL.md |
 
 Kiểm trước khi kết luận "sản phẩm":
@@ -24,7 +25,7 @@ Kiểm trước khi kết luận "sản phẩm":
 2. Repo có bộ test: viết test hồi quy, chạy và thấy nó **đỏ vì đúng lỗi này** (đỏ vì fixture/import hỏng không tính).
 3. Sửa tối thiểu, theo convention của repo (đọc `AGENTS.md`/skill sửa lỗi của repo nếu có).
 4. Chạy bộ test của repo; xanh mới commit. Một bản sửa một commit, message nêu `Bxx`/`Cxx`.
-5. Ghi lại issue: `"status":"fixed","fix_commit":"<sha>"`. Ledger đỏ nếu commit này không nằm trong HEAD của repo.
+5. Ghi lại issue: `"status":"fixed","fix_commit":"<sha>"` (kèm `repro`/`suspect` đã có từ lúc mở issue). Ledger đỏ nếu commit này không nằm trong HEAD của repo.
 
 Phải sửa file không liên quan tới lỗi, hoặc phải revert lần thứ hai cho cùng lỗi: dừng, báo user cách hiểu của bạn.
 
@@ -41,5 +42,7 @@ Sau vòng cuối, giao một subagent mới. Chỉ đưa: `GOAL.md`, `ENV.md`, `
 - tự chạy lại ít nhất các tiêu chí rủi ro cao (phân quyền, mất dữ liệu, bảo mật);
 - mặc định nghi ngờ;
 - ghi `REVIEW.md`: mỗi PASS một dòng gồm giữ/bác, lý do, file đã mở.
+
+**Reviewer không ghi bản ghi `result` vào `ledger.jsonl`.** Kết quả chạy lại của reviewer nằm trong `REVIEW.md`; nếu reviewer bác bỏ một PASS thì *bạn* ghi `result` ở vòng mới (theo bước 4) rồi phản biện lại. Lý do: `ledger.py check` lấy vòng cuối là vòng lớn nhất trong ledger, nên một `result` viết ở vòng mới sẽ khiến mọi tiêu chí khác bị coi là "chưa chạy ở vòng cuối" và phá luật vòng cuối.
 
 Ghi `{"kind":"review","round":<R>,"file":"REVIEW.md","refuted":[<id bị bác>]}`. Có PASS bị bác thì quay về Triage; sau vòng cuối mới phải phản biện lại.

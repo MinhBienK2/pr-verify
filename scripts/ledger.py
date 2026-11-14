@@ -27,6 +27,8 @@ The ledger is <workspace>/ledger.jsonl, append-only, one JSON object per line. K
 
 Commands (--ws defaults to the current directory and goes BEFORE the subcommand):
   ledger.py --ws W add '<json>' ...         validate and append; `add -f records.jsonl` or `add -` (stdin)
+                                             (--supersede to replace a criterion id, --force to override
+                                              the policy checks: broad dirty_ok globs, changing repos)
   ledger.py --ws W check                    GREEN/RED; exit 0 only when green (rules in check())
   ledger.py --ws W check --progress         same rules minus "final full round" and "review", for mid-loop
   ledger.py --ws W table [--repo api]       markdown table for the report (optionally one repo's criteria)
@@ -34,6 +36,11 @@ Commands (--ws defaults to the current directory and goes BEFORE the subcommand)
   ledger.py --ws W coverage --diff api=intake/api-12.diff [...] [--map COVERAGE.md]
                                             files in each diff with no COVERAGE.md row; unknown criterion ids
   ledger.py blank <png> ...                 BLANK/ok per screenshot (exit 1 if any blank/unreadable)
+
+check() re-validates the ledger file, so a hand-appended record cannot buy a GREEN. It also verifies
+that a base-side ("before") result was taken on the repo's base SHA, that the before and after sides
+do not use the same image, that no dirty file is product source code, and that text evidence does not
+leak credentials.
 """
 import argparse
 import fnmatch
@@ -63,6 +70,17 @@ STAMP_ROWS = 32          # evidence.mjs draws its SHA stamp in the top-right cor
 MAX_ROWS = 6000          # rows decoded per screenshot for blank detection
 MIN_CONTENT_PX = 30      # sampled pixels differing from the background needed to call a shot non-blank
 
+# A dirty file that is source code means the code under test is not the code in the recorded SHA.
+SRC_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".java", ".rb", ".php", ".rs",
+            ".cs", ".kt", ".kts", ".scala", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp", ".vue", ".svelte"}
+SRC_DIRS = ("src/", "lib/", "app/", "apps/", "packages/", "server/", "services/", "internal/", "cmd/")
+
+# secret-ish names; used to scan evidence text for leaked credentials
+SECRET_NAME_RE = re.compile(
+    r"(?i)\b(?:pass(?:word|wd)?|pwd|token|secret|key|cred(?:ential)?|auth|cookie|session|jwt|pat|api[-_]?key)"
+    r"[-_a-z0-9]*\b\s*[:=]\s*[\"']?([^\s\"',;]{6,})")
+PLACEHOLDER_RE = re.compile(r"^(?:\*+|\$\{[^}]*\}|<[^>]*>|\.\.\.|x+)$", re.I)
+
 
 class Rejected(Exception):
     pass
@@ -72,9 +90,48 @@ def is_int(v, lo):
     return isinstance(v, int) and not isinstance(v, bool) and v >= lo
 
 
+def is_source_file(rel):
+    """True when a workspace-relative path looks like product source code (not local env config)."""
+    rel = rel.replace(os.sep, "/")
+    low = rel.lower()
+    if any(low.startswith(d) or ("/" + d) in low for d in SRC_DIRS):
+        return True
+    return os.path.splitext(low)[1] in SRC_EXTS
+
+
+def broad_glob(g):
+    """True for dirty_ok globs so broad they would hide product source code."""
+    g = g.strip()
+    if g in ("*", "**", "**/*", "*/*", "*/*/*"):
+        return True
+    core = g.lstrip("./").rstrip("/")
+    if core.startswith("**"):
+        core = core.lstrip("*/")
+    ext = os.path.splitext(core)[1].lower()
+    return ext in SRC_EXTS
+
+
+def scan_secrets(path):
+    """Leaked credentials in a text evidence file. Returns a list of (line_no, name)."""
+    hits = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f, 1):
+                for m in SECRET_NAME_RE.finditer(line):
+                    val = m.group(1)
+                    if PLACEHOLDER_RE.match(val):
+                        continue
+                    hits.append((n, m.group(0).split(":")[0].split("=")[0].strip()))
+    except OSError:
+        return hits
+    return hits[:20]
+
+
 # ---------------------------------------------------------------- load / validate
 
 def read_records(ws):
+    """Load ledger.jsonl. Every line is structurally checked here so that a malformed record gives a
+    clean "ledger.jsonl:N: ..." error in every subcommand instead of a KeyError traceback later."""
     path = os.path.join(ws, "ledger.jsonl")
     if not os.path.exists(path):
         return []
@@ -89,6 +146,32 @@ def read_records(ws):
                 raise Rejected(f"ledger.jsonl:{n}: invalid JSON: {e}")
             if not isinstance(r, dict):
                 raise Rejected(f"ledger.jsonl:{n}: record must be a JSON object")
+            k = r.get("kind")
+            if k not in REQUIRED:
+                raise Rejected(f"ledger.jsonl:{n}: kind must be one of {sorted(REQUIRED)}")
+            missing = [f for f in REQUIRED[k] if f not in r or r[f] in (None, "")]
+            if missing:
+                raise Rejected(f"ledger.jsonl:{n}: {k} missing {missing}")
+            if k == "result" and not is_int(r["round"], 1):
+                raise Rejected(f"ledger.jsonl:{n}: result round must be an integer >= 1")
+            if k == "review" and not is_int(r["round"], 1):
+                raise Rejected(f"ledger.jsonl:{n}: review round must be an integer >= 1")
+            if k == "issue" and not is_int(r["found_round"], 0):
+                raise Rejected(f"ledger.jsonl:{n}: issue found_round must be an integer >= 0")
+            if k == "result" and r.get("side", "head") not in ("head", "base"):
+                raise Rejected(f"ledger.jsonl:{n}: result side must be head or base")
+            if k == "result" and r["verdict"] not in VERDICTS:
+                raise Rejected(f"ledger.jsonl:{n}: result verdict must be one of {sorted(VERDICTS)}")
+            if k == "issue" and r["status"] not in ISSUE_STATUS:
+                raise Rejected(f"ledger.jsonl:{n}: issue status must be one of {sorted(ISSUE_STATUS)}")
+            if k == "criterion" and not isinstance(r["repos"], list):
+                raise Rejected(f"ledger.jsonl:{n}: criterion repos must be a list")
+            if k == "criterion" and not isinstance(r["layers"], list):
+                raise Rejected(f"ledger.jsonl:{n}: criterion layers must be a list")
+            if k == "result" and not isinstance(r["evidence"], list):
+                raise Rejected(f"ledger.jsonl:{n}: result evidence must be a list of paths")
+            if k == "result" and not isinstance(r["commits"], dict):
+                raise Rejected(f"ledger.jsonl:{n}: result commits must be an object {repo: sha}")
             r["_line"] = n
             out.append(r)
     return out
@@ -131,16 +214,22 @@ def evidence_path_error(ws, e):
     if os.path.isabs(e):
         return f"evidence must be relative to the workspace: {e}"
     real_ws = os.path.realpath(ws)
-    real = os.path.realpath(os.path.join(ws, e))
-    if os.path.commonpath([real, real_ws]) != real_ws:
-        return f"evidence escapes the workspace: {e}"
+    try:
+        real = os.path.realpath(os.path.join(ws, e))
+        if os.path.commonpath([real, real_ws]) != real_ws:
+            return f"evidence escapes the workspace: {e}"
+    except ValueError as ex:
+        return f"evidence path is not a usable path: {e} ({ex})"
     rel = os.path.relpath(real, real_ws).replace(os.sep, "/")
     if not rel.startswith(EVIDENCE_DIRS):
         return f"evidence must live under {'/ or '.join(d.rstrip('/') for d in EVIDENCE_DIRS)}/: {e}"
     return None
 
 
-def validate(r, led, ws, supersede=False):
+def validate(r, led, ws, supersede=False, force=False, policy=True):
+    """Shape + policy check of one record. policy=False skips the judgement calls that only make
+    sense at write time (broad dirty_ok globs, changing a criterion's repos) so that re-validating
+    the ledger file never reports a problem the author already accepted with --force."""
     if not isinstance(r, dict):
         return "record must be a JSON object"
     k = r.get("kind")
@@ -154,6 +243,10 @@ def validate(r, led, ws, supersede=False):
             return f"repo path is not a git checkout: {r['path']}"
         if not isinstance(r.get("dirty_ok", []), list):
             return "dirty_ok must be a list of globs"
+        broad = [g for g in r.get("dirty_ok", []) if broad_glob(str(g))]
+        if broad and policy and not force:
+            return (f"dirty_ok {broad} is broad enough to hide product source code; "
+                    f"list the local env config files explicitly (or use add --force to override)")
     elif k == "criterion":
         if r["id"] in led.crit and not supersede:
             return f"criterion {r['id']} already exists (use add --supersede to replace it)"
@@ -164,6 +257,14 @@ def validate(r, led, ws, supersede=False):
         unknown = [x for x in r["repos"] if x not in led.repos]
         if unknown:
             return f"repos {unknown} not declared; add {{'kind':'repo',...}} records first (known: {sorted(led.repos)})"
+        old = led.crit.get(r["id"])
+        if old and supersede and policy and sorted(old.get("repos", [])) != sorted(r["repos"]) and not force:
+            done = [cid for (cid, _s), rs in led.results.items() if cid == r["id"] and rs]
+            if done:
+                return (f"criterion {r['id']} already has results but its repos changed "
+                        f"{sorted(old.get('repos', []))} -> {sorted(r['repos'])}; a result that never ran "
+                        f"on the new repo would still look valid. Re-run the criterion on every repo, "
+                        f"then replace it (use add --force to override anyway)")
     elif k == "result":
         c = led.crit.get(r["id"])
         if not c:
@@ -314,13 +415,16 @@ def git(path, *args):
 
 
 def repo_state(repo):
+    """(HEAD sha, dirty files not covered by dirty_ok, dirty files covered by dirty_ok)."""
     head = git(repo["path"], "rev-parse", "HEAD").strip()
-    dirty = []
+    dirty, covered = [], []
     for ln in git(repo["path"], "status", "--porcelain").splitlines():
         f = ln[3:].split(" -> ")[-1]
-        if not any(fnmatch.fnmatch(f, g) for g in repo.get("dirty_ok", [])):
+        if any(fnmatch.fnmatch(f, g) for g in repo.get("dirty_ok", [])):
+            covered.append(f)
+        else:
             dirty.append(f)
-    return head, dirty
+    return head, dirty, covered
 
 
 def is_ancestor(path, a, b):
@@ -331,29 +435,54 @@ def is_ancestor(path, a, b):
 
 def check(ws, progress=False):
     """GREEN means all of:
-    - repos: each declared repo's working tree is clean outside dirty_ok;
+    - every record in ledger.jsonl is structurally valid (re-validated here, not only at write time);
+    - repos: each declared repo's working tree is clean outside dirty_ok, and no dirty file is
+      product source code (the code under test must be the code in the recorded SHA);
     - every criterion's latest head-side result: PASS (or SKIP with approved_by_user), taken on the
       repo's current HEAD for every repo it names, with existing, non-empty evidence, screenshots
       not blank (unless note says intentional-blank) and not byte-identical to another criterion's,
       and not mocked;
-    - baseline criteria also have a base-side result with evidence;
+    - baseline criteria also have a base-side result whose evidence exists and whose commits match
+      the repo's base SHA (a "before" picture is only a before if it was taken on the base SHA);
     - every fixed issue's fix_commit is contained in its repo's HEAD (so, with the rule above, every
       criterion of that repo was re-run after the fix);
     - no issue open or needs-decision;
     - (final, skipped with --progress) every criterion has a head-side result in the last round R, and
       a review record for R exists with nothing refuted."""
-    led = Ledger(read_records(ws))
+    records = read_records(ws)
+    led = Ledger(records)
     problems = []
+    # Re-validate the *effective* state of the ledger: add-time validation can be bypassed by
+    # appending to ledger.jsonl by hand, and a hand-written record must not be able to buy a GREEN.
+    effective = []
+    effective += list(led.repos.values())
+    effective += list(led.crit.values())
+    for _key, rs in led.results.items():
+        effective.append(rs[max(rs)])
+    effective += list(led.issues.values())
+    if led.reviews:
+        effective.append(led.reviews[max(led.reviews)])
+    seen_problems = set()
+    for rec in effective:
+        err = validate(rec, led, ws, supersede=True, policy=False)
+        if err and err not in seen_problems:
+            seen_problems.add(err)
+            problems.append(f"ledger.jsonl:{rec.get('_line', '?')}: {err}")
     if not led.repos:
         problems.append("no repo records: add {'kind':'repo','name':...,'path':...} for every repo")
     if not led.crit:
         problems.append("no criteria in ledger")
     heads = {}
     for name, repo in sorted(led.repos.items()):
-        head, dirty = repo_state(repo)
+        head, dirty, covered = repo_state(repo)
         heads[name] = head
         if dirty:
             problems.append(f"repo {name}: uncommitted changes outside dirty_ok: {', '.join(dirty[:8])}")
+        src_dirty = [f for f in dirty + covered if is_source_file(f)]
+        if src_dirty:
+            problems.append(f"repo {name}: product source code is modified but not committed: "
+                            f"{', '.join(src_dirty[:8])} (the code under test must be the code in the SHA; "
+                            f"dirty_ok may only cover local env config)")
     img_owner = {}
     R = led.max_round
     for cid, c in sorted(led.crit.items()):
@@ -369,7 +498,10 @@ def check(ws, progress=False):
             problems.append(f"{cid}: latest result is round {r['round']}; the final round {R} must re-run every criterion")
         for repo in c["repos"]:
             got = r["commits"].get(repo, "")
-            if repo in heads and not heads[repo].startswith(got):
+            if not got:
+                problems.append(f"{cid}: result declares no commit sha for {repo}: "
+                                f"the criterion was never run against that repo")
+            elif repo in heads and not heads[repo].startswith(got):
                 problems.append(f"{cid}: result taken on {repo}@{got}, HEAD is {heads[repo][:10]}: re-run on HEAD")
         sides = [("head", r)]
         if c.get("baseline"):
@@ -378,6 +510,17 @@ def check(ws, progress=False):
                 problems.append(f"{cid}: baseline criterion has no base-side (before) result with evidence")
             else:
                 sides.append(("base", b))
+                for repo in c["repos"]:
+                    base_sha = led.repos.get(repo, {}).get("base", "")
+                    got = b["commits"].get(repo, "")
+                    if not base_sha:
+                        problems.append(f"{cid}: repo {repo} has no base sha in its repo record: "
+                                        f"a before-side result cannot be verified")
+                    elif not got:
+                        problems.append(f"{cid}: base-side result declares no commit sha for {repo}")
+                    elif not base_sha.startswith(got):
+                        problems.append(f"{cid}: base-side result taken on {repo}@{got}, but the base sha is "
+                                        f"{base_sha[:10]}: a 'before' picture must be taken on the base code")
         for side, rec in sides:
             for e in rec["evidence"]:
                 err = evidence_path_error(ws, e)
@@ -399,12 +542,35 @@ def check(ws, progress=False):
                             problems.append(f"{cid}: blank screenshot {e} (note 'intentional-blank' if the blank page is the evidence)")
                     except Exception as ex:
                         problems.append(f"{cid}: unreadable image {e}: {ex}")
+        # the same picture cannot be the "before" and the "after" of one criterion
+        head_imgs, base_imgs = set(), set()
+        for rec, bucket in ((r, head_imgs), (led.latest(cid, "base") or {}, base_imgs)):
+            for e in rec.get("evidence", []):
+                p = os.path.join(ws, e)
+                if e.lower().endswith(".png") and os.path.isfile(p):
+                    with open(p, "rb") as fh:
+                        bucket.add(hashlib.sha256(fh.read()).hexdigest())
+        for d in sorted(head_imgs & base_imgs):
+            problems.append(f"{cid}: the before and after sides use the same image (sha256 {d[:10]}); "
+                            f"a before picture must be taken on the base code")
     for iid, i in sorted(led.issues.items()):
         if i["status"] in ("open", "needs-decision"):
             problems.append(f"{iid}: issue {i['status']}: {i['summary']}")
         if i["status"] == "fixed" and i["repo"] in led.repos:
             if not is_ancestor(led.repos[i["repo"]]["path"], i["fix_commit"], heads.get(i["repo"], "HEAD")):
                 problems.append(f"{iid}: fix_commit {i['fix_commit']} is not in {i['repo']} HEAD")
+    # leaked credentials in text evidence: the files are committed to the workspace and published on the MR
+    for cid, c in sorted(led.crit.items()):
+        for rec in (led.latest(cid), led.latest(cid, "base")):
+            if not rec:
+                continue
+            for e in rec.get("evidence", []):
+                p = os.path.join(ws, e)
+                if not e.lower().endswith((".txt", ".log", ".json", ".md")) or not os.path.isfile(p):
+                    continue
+                for line_no, name in scan_secrets(p):
+                    problems.append(f"{cid}: possible secret ({name}) in evidence {e}:{line_no}; "
+                                    f"keep only the variable name in the evidence")
     if not progress:
         rv = led.reviews.get(R)
         if not rv:
@@ -444,13 +610,36 @@ def table(ws, only_repo=None):
     return "\n".join(out)
 
 
+def _decode_git_path(p):
+    """git quotes paths that are not plain ASCII as "a/caf\\303\\251.txt"; decode them back.
+    Octal escapes are decoded even when the path is not quoted, because some tools emit them that way."""
+    p = p.strip()
+    if p.startswith('"') and p.endswith('"'):
+        p = p[1:-1]
+    if "\\" not in p:
+        return p
+    out = bytearray()
+    i = 0
+    while i < len(p):
+        if p[i] == "\\" and re.match(r"^[0-7]{3}$", p[i + 1:i + 4] or ""):
+            out.append(int(p[i + 1:i + 4], 8) & 0xFF)
+            i += 4
+        else:
+            out.extend(p[i].encode("utf-8"))
+            i += 1
+    return out.decode("utf-8", "replace")
+
+
 def diff_files(path):
     """Paths changed in a unified diff: `git diff` (diff --git a/x b/y) or `glab mr diff` (--- x / +++ x).
-    Hunk bodies are skipped by their line counts, so content lines starting with ---/+++ are not headers."""
+    Hunk bodies are skipped by their line counts, so content lines starting with ---/+++ are not headers.
+    Quoted non-ASCII paths are decoded back to their real name."""
     files, old = [], None
     lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
     i = 0
-    strip = lambda p: re.sub(r"^[ab]/", "", p.split("\t")[0].strip().strip('"'))
+    def strip(p):
+        p = _decode_git_path(p.split("\t")[0].strip())
+        return re.sub(r"^[ab]/", "", p)
     while i < len(lines):
         ln = lines[i]
         m = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", ln)
@@ -477,27 +666,56 @@ def diff_files(path):
             if f and f != "/dev/null" and f not in files:
                 files.append(f)
         else:
-            m = re.match(r"^diff --git a/(.+?) b/(.+)$", ln)
-            if m and m.group(2) not in files:
-                files.append(m.group(2))  # also catches binary/rename-only entries with no ---/+++
+            m = re.match(r'^diff --git "?a/(.+?)"? "?b/(.+?)"?$', ln)
+            if m:
+                f = _decode_git_path(m.group(2))
+                f = re.sub(r"^b/", "", f)
+                if f and f not in files:
+                    files.append(f)  # also catches binary/rename-only entries with no ---/+++
         i += 1
     return files
 
 
-def coverage(ws, diffs, map_file):
-    led = Ledger(read_records(ws))
-    rows = []
-    with open(os.path.join(ws, map_file), encoding="utf-8") as f:
-        lines = f.read().splitlines()
+def coverage_rows(text):
+    """Rows of the COVERAGE table only. Other sections of the file (e.g. "Lớp luồng") are ignored,
+    even when they are written as a table."""
+    lines = text.splitlines()
     sep = re.compile(r"^\s*\|[\s|:-]+\|\s*$")
+    blocks, cur = [], None
     for n, ln in enumerate(lines):
-        if not ln.lstrip().startswith("|") or sep.match(ln):
+        if ln.lstrip().startswith("|"):
+            if cur is None:
+                cur = []
+            cur.append((n, ln))          # the separator row belongs to the table, it does not split it
+        else:
+            if cur:
+                blocks.append(cur)
+            cur = None
+    if cur:
+        blocks.append(cur)
+    if not blocks:
+        return []
+    chosen = None
+    for b in blocks:
+        head = b[0][1].lower()
+        if "tiêu chí" in head or "criterion" in head:
+            chosen = b
+            break
+    if chosen is None:
+        chosen = blocks[0]
+    rows = []
+    for n, ln in chosen[1:]:
+        if sep.match(ln):
             continue
-        if n + 1 < len(lines) and sep.match(lines[n + 1]):
-            continue  # header row
         cells = [x.strip() for x in ln.strip().strip("|").split("|")]
         if len(cells) >= 4:
             rows.append((cells[0], re.sub(r":[\d,\- ]+$", "", cells[1].strip("`")), cells[-1]))
+    return rows
+
+
+def coverage(ws, diffs, map_file):
+    led = Ledger(read_records(ws))
+    rows = coverage_rows(open(os.path.join(ws, map_file), encoding="utf-8").read())
     problems = []
     for spec in diffs:
         repo, path = spec.split("=", 1) if "=" in spec else ("", spec)
@@ -525,6 +743,7 @@ def main():
     a.add_argument("records", nargs="*")
     a.add_argument("-f", dest="file", help="JSONL file of records, '-' for stdin")
     a.add_argument("--supersede", action="store_true", help="allow replacing an existing criterion id")
+    a.add_argument("--force", action="store_true", help="override the policy checks (broad dirty_ok globs, changing a criterion's repos)")
     c = sub.add_parser("check")
     c.add_argument("--progress", action="store_true", help="mid-loop check: skip final-round and review rules")
     t = sub.add_parser("table")
@@ -555,7 +774,7 @@ def main():
                     r = json.loads(s)
                 except json.JSONDecodeError as e:
                     raise Rejected(f"{s[:80]}: invalid JSON: {e}")
-                err = validate(r, Ledger(records + recs), ws, args.supersede)
+                err = validate(r, Ledger(records + recs), ws, args.supersede, args.force)
                 if err:
                     raise Rejected(f"{s[:80]}: {err}")
                 recs.append(r)

@@ -4,11 +4,14 @@ Người review không chạy lại được; họ chỉ tin cái họ nhìn th�
 
 ## Quy tắc chung
 
-- Bằng chứng là **file** trong `shots/r<N>/` hoặc `logs/r<N>/` của workspace, ghi đường dẫn tương đối vào `evidence` của `result` (ledger từ chối đường dẫn ngoài hai thư mục này). Output trên terminal có thể bị wrapper rút gọn hoặc tóm tắt, nên luôn đọc lại từ file.
+- Bằng chứng là **file** trong `shots/r<N>/` hoặc `logs/r<N>/` của workspace, ghi **đường dẫn tương đối theo gốc workspace** (vd `shots/r1/C01-after.png`) vào `evidence` của `result` (ledger từ chối đường dẫn ngoài hai thư mục này). Output trên terminal có thể bị wrapper rút gọn hoặc tóm tắt, nên luôn đọc lại từ file.
+- **Tên file không có khoảng trắng** — dùng dấu gạch nối (`C01-after-admin-orders.png`). Đường dẫn có khoảng trắng phải bọc trong `<...>` khi nhúng vào Markdown; `gl_evidence.py` báo lỗi nếu gặp đường dẫn local có khoảng trắng không bọc, vì Markdown sẽ không upload và sẽ đăng ảnh hỏng lên MR.
+- `shot()` và `capture.sh` ghi đường dẫn tương đối theo **CWD** — chạy harness với CWD = workspace.
 - Mỗi bằng chứng biết nó chụp trên SHA nào: nhãn trên ảnh (`shot({stamp})`), dòng `# repo … sha=` (`capture.sh --repo`), trường `commits` trong ledger.
 - Tên file: `<id>-<before|after>-<mô-tả-ngắn>.<ext>`, ví dụ `C07-after-locked-user-403.txt`.
-- Before và after chạy **cùng một kịch bản**, chỉ khác SHA.
+- Before và after chạy **cùng một kịch bản**, chỉ khác SHA. Bản ghi `side: "base"` ghi `commits` là **base SHA**, và `ledger.py check` đối chiếu nó với `repo["base"]`; ảnh "before" và "after" phải là hai file khác nhau.
 - Bằng chứng dựng từ response giả lập (`page.route().fulfill`, stub, mock): ghi `"mock": true` trên result và chụp với `shot({mock: true})`. Ledger từ chối PASS có cờ này: mock chỉ để minh hoạ.
+- **Bằng chứng không chứa bí mật.** Chỉ ghi tên biến (`${TOKEN_LOCKED}`), không ghi giá trị. `ledger.py check` quét file text và báo đỏ nếu thấy `tên_bí_mật = giá_trị`.
 
 ## UI
 
@@ -23,6 +26,7 @@ await shot(page, `shots/r${R}/C05-after-admin-orders.png`, {
 
 - `shot()` chờ `settle()`: network yên, `ready` thoả, nội dung trang ổn định khoảng 2 giây, không còn skeleton/spinner/ảnh đang tải trong khung nhìn, trang có nội dung. Hết giờ thì nó **ném lỗi**: để lỗi nổi lên, vì `.catch(() => {})` quanh nó biến một ảnh thiếu thành PASS không bằng chứng.
 - Luôn truyền `ready` (selector hoặc hàm) mô tả "dữ liệu đã về" của màn hình đó: dữ liệu về muộn mà không có spinner thì chỉ `ready` bắt được. Trang có loading riêng thì thêm `busySelectors`.
+- Trang có **text biến động** (đồng hồ, bộ đếm, timestamp): `settle()` mặc định bỏ qua chữ số khi so sánh ổn định (`ignoreDigits`), và có thể loại vùng đó bằng `ignoreSelectors: ['.clock']`. Nếu không, trang đó không bao giờ settle và `shot()` không ghi được ảnh.
 - Lazy-load / carousel: cuộn xuống cuối rồi lên đầu, đưa carousel về slide đầu trước khi chụp `fullPage`.
 - Màn hình trắng/403 **là** bằng chứng: `shot(page, p, { intentionalBlank: true, stamp })` ghim nhãn đỏ, và `note` của result chứa `intentional-blank`.
 - Ảnh cho người đọc: chụp đủ ngữ cảnh (menu, URL, tên người dùng/vai trò), không chỉ một ô. Toast/thông báo thoáng qua: chờ nó hiện rồi chụp ngay, thêm ảnh riêng phần tử nếu nhỏ.
@@ -48,7 +52,7 @@ Ghi request (method, URL, vai trò dùng), status, header quan trọng, body (r�
 
 ## Biến API/SQL thành ảnh
 
-Người review MR thường chỉ lướt ảnh. Với tiêu chí quan trọng ở tầng API/DB, thêm một ảnh `card()`: tiêu đề tiêu chí, panel BEFORE (đỏ) và AFTER (xanh) chứa nội dung file `logs/` tương ứng.
+Người review MR thường chỉ lướt ảnh. Với tiêu chí quan trọng ở tầng API/DB, thêm một ảnh `card()`: tiêu đề tiêu chí, panel BEFORE (đỏ) và AFTER (xanh) chứa nội dung file `logs/` tương ứng. `card()` cắt phần text dài quá `maxChars` (mặc định 2000) và ghi rõ trong ảnh là đã cắt; file log gốc vẫn đầy đủ.
 
 ## Video / trace
 

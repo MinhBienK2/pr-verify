@@ -13,6 +13,8 @@ What it does:
   3. Finds every local image in the body: ![alt](path), ![alt](<path with spaces> "title"),
      <img src="path">, and reference definitions [id]: path. Uploads each to THAT project
      (uploads belong to one project), cached by sha256 in <body>.uploads.<host>.<project-id>.json.
+     Only files under the workspace's shots/ and logs/ are uploaded, and only image extensions;
+     --allow-any lifts that (it is for evidence outside the workspace, use with care).
   4. Rewrites each reference to https://<host>/-/project/<id>/uploads/<secret>/<file>
      (the relative /uploads/... form renders broken on current GitLab; /<ns>/<proj>/uploads 404s).
      Any image reference still pointing at a local path afterwards is an error, dry-run included.
@@ -38,13 +40,16 @@ import urllib.parse
 MD_IMG = re.compile(r"""(!\[(?:[^\[\]]|\[[^\]]*\])*\]\(\s*)(<[^>\n]+>|(?:[^\s()]|\([^\s()]*\))+)((?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\))""")
 HTML_IMG = re.compile(r"""(<img\b[^>]*?\bsrc\s*=\s*)("[^"]+"|'[^']+'|[^\s>]+)""", re.I)
 REF_DEF = re.compile(r"""(?m)^( {0,3}\[[^\]]+\]:\s*)(<[^>\n]+>|\S+)""")
+# a looser scan: any markdown image, used to catch paths the strict patterns above do not match
+LOOSE_IMG = re.compile(r"""!\[[^\]]*\]\(([^)\n]+)\)""")
 IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm")
+ALLOWED_DIRS = ("shots/", "logs/")
 
 
 def sh(cmd, cwd=None):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd[:6])}...: {r.stderr.strip()[:400]} {r.stdout.strip()[:200]}")
+        raise RuntimeError(f"{' '.join(cmd)} failed: {r.stderr.strip()[:400]} {r.stdout.strip()[:200]}")
     return r.stdout
 
 
@@ -120,6 +125,54 @@ def local_refs(text):
     return [r for r in out if not is_remote(r)]
 
 
+def unspaced_paths(text):
+    """Local image paths that contain a space and are not wrapped in <...>. The strict patterns
+    above do not match them, so they would be published as broken relative links. Fail loudly
+    instead of shipping a broken picture."""
+    out = []
+    for m in LOOSE_IMG.finditer(text):
+        dest = m.group(1).strip()
+        if dest.startswith("<") and dest.endswith(">"):
+            continue
+        dest = re.sub(r"\s+[\"'(].*$", "", dest).strip()
+        if " " in dest and not is_remote(dest):
+            out.append(dest)
+    return out
+
+
+def resolve_upload(ref, base, ws, allow_any):
+    """Where an image reference points, and whether it may be uploaded at all.
+    A relative path is resolved against the workspace root first, then against the directory of
+    the body file, so a body may use either form."""
+    if os.path.isabs(ref):
+        cands = [ref]
+    else:
+        cands = [os.path.join(ws, ref), os.path.join(base, ref)]
+    f = None
+    for c in cands:
+        rc = os.path.realpath(c)
+        if os.path.isfile(rc):
+            f = rc
+            break
+    if f is None:
+        raise RuntimeError(f"image not found: {ref} (tried {', '.join(cands)})")
+    if allow_any:
+        return f
+    ws_real = os.path.realpath(ws)
+    if os.path.commonpath([f, ws_real]) != ws_real:
+        raise RuntimeError(f"refusing to upload {ref}: it is outside the workspace {ws}; "
+                           f"only evidence under {', '.join(ALLOWED_DIRS)} may be published")
+    rel = os.path.relpath(f, ws_real).replace(os.sep, "/")
+    if not rel.startswith(ALLOWED_DIRS):
+        raise RuntimeError(f"refusing to upload {ref}: only evidence under {', '.join(ALLOWED_DIRS)} "
+                           f"may be published (use --allow-any to override)")
+    ext = os.path.splitext(f)[1].lower()
+    if ext not in IMG_EXT:
+        raise RuntimeError(f"refusing to upload {ref}: {ext or 'no extension'} is not an image "
+                           f"({', '.join(IMG_EXT)})")
+    return f
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", required=True, help="local clone of the MR's project")
@@ -128,6 +181,8 @@ def main():
     ap.add_argument("--expect-sha", help="sha the evidence was taken on; MR head must start with it (required to publish)")
     ap.add_argument("--key", default="pr-verify", help="marker key; one note/description block per key (use the feature slug)")
     ap.add_argument("--target", choices=["note", "description"], default="note")
+    ap.add_argument("--workspace", help="workspace holding shots/ and logs/ (default: the parent of the body's directory)")
+    ap.add_argument("--allow-any", action="store_true", help="upload any local file, not only evidence under shots/ and logs/")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if not a.dry_run and not a.expect_sha:
@@ -149,6 +204,8 @@ def main():
     body_path = os.path.abspath(a.body)
     base = os.path.dirname(body_path)
     body = open(body_path, encoding="utf-8").read()
+    ws = os.path.abspath(a.workspace) if a.workspace else (
+        os.path.dirname(base) if os.path.basename(base) == "report" else base)
     cache_path = f"{body_path}.uploads.{host}.{pid}.json"
     prefix = f"https://{host}/-/project/{pid}/uploads/"
     try:
@@ -157,11 +214,12 @@ def main():
     except (OSError, ValueError):
         cache = {}
 
+    uploaded = set()
+
     def upload(ref):
-        f = ref if os.path.isabs(ref) else os.path.join(base, ref)
-        if not os.path.isfile(f):
-            raise RuntimeError(f"image not found: {ref} (resolved to {f})")
+        f = resolve_upload(ref, base, ws, a.allow_any)
         digest = hashlib.sha256(open(f, "rb").read()).hexdigest()
+        uploaded.add(digest)
         if digest not in cache:
             if a.dry_run:
                 return f"{prefix}<dry-run>/{urllib.parse.quote(os.path.basename(f))}"
@@ -194,7 +252,10 @@ def main():
     leftover = local_refs(body)
     if leftover:
         raise RuntimeError("image references still local after rewrite (unsupported syntax?): " + ", ".join(leftover))
-    n_img = body.count(prefix)
+    spaced = unspaced_paths(body)
+    if spaced:
+        raise RuntimeError("image path(s) with spaces must be wrapped in <...>: " + ", ".join(spaced))
+    n_img = len(uploaded)
 
     marker = f"<!-- pr-verify:{a.key} -->"
     start, end = f"<!-- pr-verify:{a.key}:start -->", f"<!-- pr-verify:{a.key}:end -->"
@@ -210,6 +271,10 @@ def main():
             print(f"[dry-run] would {action} with {n_img} image(s)\n----\n{final}\n----")
             return
         if mine:
+            # someone else may have edited the note while we were uploading
+            now = gl.api("GET", f"projects/{pid}/merge_requests/{a.mr}/notes/{mine[0]['id']}")["body"]
+            if now != (mine[0].get("body") or ""):
+                raise RuntimeError(f"note {mine[0]['id']} changed while preparing the update; re-run")
             res = gl.api("PUT", f"projects/{pid}/merge_requests/{a.mr}/notes/{mine[0]['id']}", body={"body": final})
         else:
             res = gl.api("POST", f"projects/{pid}/merge_requests/{a.mr}/notes", body={"body": final})
@@ -236,6 +301,7 @@ def main():
         where = mr["web_url"]
 
     urls = [clean(m.group(2)) for m in MD_IMG.finditer(stored)] + [clean(m.group(2)) for m in HTML_IMG.finditer(stored)]
+    urls += [clean(m.group(2)) for m in REF_DEF.finditer(stored) if "/uploads/" in clean(m.group(2))]
     bad = [u for u in urls if "/uploads/" in u and not u.startswith(prefix)] + local_refs(stored)
     if bad:
         print("image URLs that will render broken:", *bad, sep="\n  ")

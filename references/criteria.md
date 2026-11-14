@@ -56,6 +56,17 @@ EOF
 
 Hai cách hiểu hợp lý cho ra hai kết quả khác nhau: ghi `issue` với `status: needs-decision`, `found_round: 0` nếu phát sinh ở bước này, `criterion` là tiêu chí liên quan (hoặc `"-"`), nêu hai cách hiểu và đề xuất của bạn. Hỏi theo các mốc ở SKILL.md; khi user chốt, ghi lại issue với `status: decided`, `decision`, `decided_by` (trích lời user).
 
+Bản ghi `issue` đầy đủ (mọi trường bắt buộc):
+
+```json
+{"kind":"issue","id":"B01","criterion":"C03","found_round":1,"repo":"api",
+ "status":"open","summary":"khoá user vẫn gọi được /api/me",
+ "repro":"curl -H \"Authorization: Bearer $TOKEN_LOCKED\" $API/api/me → 200 (mong đợi 403)",
+ "suspect":"src/guards/auth.ts:88"}
+```
+
+`repo` là tên repo trong ledger (hoặc `"-"` khi lỗi không thuộc repo nào). `repro` và `suspect` là hai trường tự do nhưng **bắt buộc theo quy trình** cho issue `open`: không có chúng thì người khác không tái hiện được lỗi.
+
 ## COVERAGE.md
 
 ```

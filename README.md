@@ -16,7 +16,7 @@ The skill's instructions are written in Vietnamese; the scripts and their `--hel
 
 ## Requirements
 
-- git, bash, python3 ≥ 3.8 (scripts use the standard library only)
+- git, bash ≥ 3, python3 ≥ 3.8 (scripts use the standard library only)
 - [`glab`](https://gitlab.com/gitlab-org/cli) authenticated to your GitLab host (`glab auth login --hostname <host>`), recent enough to support `glab api --form`
 - Node + Playwright in the project that holds your test harness, for `scripts/evidence.mjs`
 - Linux recommended: the environment guide uses `systemd-run --user`, `journalctl` and `fuser`; `capture.sh` uses GNU `date -Iseconds`
@@ -54,10 +54,10 @@ The workspace defaults to `$HOME/.pr-verify/<slug>/`; override it with `PR_VERIF
 | `references/evidence.md` | Evidence standards for UI, API, DB |
 | `references/triage.md` | Classifying failures, the fix loop, the final round, independent review |
 | `references/report.md` | MR description and evidence comment templates, publishing |
-| `scripts/ledger.py` | Ledger: `add`, `check` (GREEN/RED), `table`, `status`, `coverage`, `blank` |
+| `scripts/ledger.py` | Ledger: `add` (`--supersede`, `--force`), `check` (GREEN/RED, `--progress`), `table`, `status`, `coverage`, `blank` |
 | `scripts/capture.sh` | Run a command and keep stamped, secret-masked output as evidence |
 | `scripts/evidence.mjs` | Playwright helpers: `settle`, `shot` (SHA stamp), `card` (API/SQL as image) |
-| `scripts/gl_evidence.py` | Check the MR head SHA, upload images, create or update one note or description block |
+| `scripts/gl_evidence.py` | Check the MR head SHA, upload images from the workspace (`--workspace`, `--allow-any`), create or update one note or description block |
 | `agents/openai.yaml` | Codex UI metadata |
 
 See [CREDITS.md](CREDITS.md) for the ideas this builds on.

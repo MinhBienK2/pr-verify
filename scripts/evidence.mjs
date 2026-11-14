@@ -28,6 +28,10 @@ const BUSY = [
  *     body text + element count, with no visible busy indicator, no pending in-viewport image,
  *     and some content (text, or a sized canvas/img/svg/video) unless `allowEmpty`.
  * Throws with the last sample when `timeout` elapses.
+ *
+ * Volatile text (a clock, a live counter) must not keep the page from settling:
+ * `ignoreDigits` (default true) normalises digit runs to '#' before hashing, and `ignoreSelectors`
+ * removes those elements from the hash. `ready` stays the signal that the data has arrived.
  */
 export async function settle(page, opts = {}) {
   const {
@@ -36,6 +40,8 @@ export async function settle(page, opts = {}) {
     interval = 500,
     networkIdleMs = 3_000,
     busySelectors = BUSY,
+    ignoreSelectors = [],
+    ignoreDigits = true,
     ready = null,
     allowEmpty = false,
   } = opts
@@ -46,7 +52,7 @@ export async function settle(page, opts = {}) {
   let same = 0
   let s = null
   while (Date.now() < deadline) {
-    s = await page.evaluate(({ sels, readySel }) => {
+    s = await page.evaluate(({ sels, readySel, ignoreSels, dropDigits }) => {
       const inView = (r) => r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth
       const visible = (el) => {
         const r = el.getBoundingClientRect()
@@ -62,13 +68,24 @@ export async function settle(page, opts = {}) {
         try { document.querySelectorAll(sel).forEach((el) => { if (visible(el) && inView(el.getBoundingClientRect())) busy++ }) } catch { /* bad selector */ }
       }
       const imgs = [...document.images].filter((i) => !i.complete && visible(i) && inView(i.getBoundingClientRect())).length
-      const text = (document.body && document.body.innerText || '').trim()
+      // hash the body text, minus the volatile bits
+      let text = (document.body && document.body.innerText || '').trim()
+      let count = document.getElementsByTagName('*').length
+      if (ignoreSels.length) {
+        const clone = document.body.cloneNode(true)
+        for (const sel of ignoreSels) {
+          try { clone.querySelectorAll(sel).forEach((el) => el.remove()) } catch { /* bad selector */ }
+        }
+        text = (clone.textContent || '').trim()
+        count = clone.getElementsByTagName('*').length
+      }
+      if (dropDigits) text = text.replace(/\d+/g, '#')
       let h = 0
       for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0
       const media = [...document.querySelectorAll('canvas,img,svg,video')].filter(visible).length
       const ok = readySel === null ? true : !!document.querySelector(readySel) && visible(document.querySelector(readySel))
-      return { key: `${h}:${text.length}:${document.getElementsByTagName('*').length}`, text: text.length, media, busy, imgs, ok }
-    }, { sels: busySelectors, readySel: typeof ready === 'string' ? ready : null })
+      return { key: `${h}:${text.length}:${count}`, text: text.length, media, busy, imgs, ok }
+    }, { sels: busySelectors, readySel: typeof ready === 'string' ? ready : null, ignoreSels: ignoreSelectors, dropDigits: ignoreDigits })
     if (typeof ready === 'function') s.ok = !!(await page.evaluate(ready))
     same = s.key === last ? same + 1 : 1
     last = s.key
@@ -125,11 +142,19 @@ export async function shot(page, path, opts = {}) {
  *   })
  * Pass `after` alone for a single panel. Text is shown verbatim (monospace, escaped); feed it
  * the evidence file written by capture.sh, so the picture and the log say the same thing.
+ * Long text is cut at `maxChars` (default 2000) and the cut is stated in the picture; the file
+ * itself stays untouched, so the full text is always available.
  * Uses a fresh page, so the caller's page is untouched.
  */
-export async function card(page, path, { title, before, after, width = 1280 }) {
+export async function card(page, path, { title, before, after, width = 1280, maxChars = 2000 }) {
   const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
-  const panel = (p, colour) => p ? `<section><h2 style="background:${colour}">${esc(p.label || '')}</h2><pre>${esc(p.text)}</pre></section>` : ''
+  const cut = (p) => {
+    if (!p) return ''
+    const text = String(p.text ?? '')
+    const body = text.length > maxChars ? `${text.slice(0, maxChars)}\n… (đã cắt ${text.length - maxChars} ký tự; xem file đầy đủ)` : text
+    return `<section><h2 style="background:${p.colour}">${esc(p.label || '')}</h2><pre>${esc(body)}</pre></section>`
+  }
+  const panel = (p, colour) => (p ? cut({ ...p, colour }) : '')
   const html = `<!doctype html><meta charset="utf-8"><style>
     body{margin:0;font:14px/1.45 system-ui,sans-serif;background:#fff;color:#111}
     h1{font-size:16px;margin:0;padding:10px 14px;background:#263238;color:#fff}
@@ -144,8 +169,10 @@ export async function card(page, path, { title, before, after, width = 1280 }) {
   try {
     await p.setViewportSize({ width, height: 120 }) // fullPage grows to the content
     await p.setContent(html)
-    await p.screenshot({ path, fullPage: true })
+    await p.screenshot({ path, fullPage: true, timeout: 60_000 })
     return { path }
+  } catch (err) {
+    throw new Error(`card: could not render ${path}: ${err.message}`)
   } finally {
     await p.close()
   }
