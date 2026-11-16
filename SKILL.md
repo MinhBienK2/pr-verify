@@ -1,132 +1,106 @@
 ---
 name: pr-verify
 description: >-
-  Nghiệm thu (acceptance) tính năng/MR bằng E2E thật, sửa lỗi theo vòng tới khi ledger GREEN,
-  rồi đăng bằng chứng có ảnh lên từng MR GitLab. Use when asked to nghiệm thu, verify or prove
-  a feature or MR end to end with evidence.
+  Nghiệm thu một thay đổi bằng cách chạy thật mọi luồng nó chạm tới, trên môi trường thật, có bằng
+  chứng: tính năng mới, yêu cầu, bản fix bug, refactor; web UI, API, job nền, CLI hay thư viện.
+  Use when asked to nghiệm thu, QA, test E2E toàn bộ luồng của tính năng, kiểm tra bản fix bug,
+  or verify an MR/PR.
 ---
 
 # pr-verify
 
-Đầu vào tối thiểu là **mục tiêu** của tính năng và các MR (hoặc repo + nhánh) chứa nó. Bạn tự quyết test cái gì và bằng công cụ gì; skill này quy định quy trình, chuẩn bằng chứng và điều kiện xong.
+Skill này là một phương pháp kiểm thử để trả lời một câu: **thay đổi này có làm đúng điều được yêu cầu, ở mọi luồng nó chạm tới, mà không làm hỏng chỗ khác?** Đầu vào có thể là lời yêu cầu, issue, nhánh, diff, MR/PR, hoặc vài thứ cùng lúc. Bạn tự chọn công cụ; skill nói phải test những gì, theo thứ tự nào, và thế nào thì kết quả đáng tin.
 
-## Leading words
+## Từ khoá
 
-- **Tiêu chí (criterion)**: một hành vi quan sát được mà mục tiêu đòi hỏi, ID `C01…`.
-- **Oracle**: cách biết tiêu chí đạt, so với *nguồn chuẩn* (DB, config, spec, hành vi ở nhánh đích).
-- **Vòng (round)**: một lượt chạy các tiêu chí cần chạy, trên SHA đã ghim. **Vòng cuối** chạy *mọi* tiêu chí trên HEAD cuối.
-- **Ledger**: `ledger.jsonl` trong workspace, nơi duy nhất ghi repo, tiêu chí, kết quả, lỗi, phản biện. Báo cáo sinh từ ledger.
-- **Green / red**: kết quả của `ledger.py check`. Chỉ *green* mới gọi là nghiệm thu.
-- **Before / after**: cùng một kịch bản chạy trên SHA base (`side: base`) và SHA head.
+- **Yêu cầu** (`R1`, `R2`…): một điều kiểm được mà thay đổi phải thoả, kèm nguồn (lời user, AC của issue, hành vi base phải giữ).
+- **Luồng** (`F1`…): một đường đi *actor × điểm vào × trạng thái dữ liệu → kết quả + tác dụng phụ*. Tập luồng là mẫu số của câu "đã test mọi luồng".
+- **Ca** (`T1`…): một lần chạy cụ thể trên một luồng: dữ liệu, thao tác, oracle.
+- **Oracle**: cách biết ca đạt, so với một *nguồn chuẩn* (DB, spec, hành vi base). Oracle có **đối chứng** khi có một tình huống đã biết mà nó báo fail.
+- **Base / head**: code trước thay đổi / code đang kiểm, mỗi bên là một SHA.
+- **Bằng chứng**: file lưu trong workspace (ảnh, output lệnh, SQL kèm kết quả).
 
-## Công cụ đi kèm (`<skill-dir>/scripts/`)
+## Phạm vi quyền
+
+Mặc định skill **kiểm thử và báo cáo**: dựng môi trường test, tạo dữ liệu test trên host test, viết harness trong workspace. Sửa code sản phẩm chỉ khi user đã yêu cầu sửa; khi đó commit cục bộ từng bản sửa. Push và đăng lên MR/PR cần lời user. Bước tiếp theo chạm host không nằm trong danh sách host test thì dừng và hỏi.
+
+## Workspace
+
+`${PR_VERIFY_HOME:-$HOME/.pr-verify}/<slug>/`, slug là tên nhánh hoặc tên ngắn của tính năng. Bên trong: `VERIFY.md` (nguồn duy nhất cho yêu cầu, luồng, ca và kết quả), `shots/`, `logs/` (bằng chứng), `harness/` (code test), `report/` (bản đăng lên MR/PR nếu có). `VERIFY.md` là markdown thường; khung gợi ý:
+
+```markdown
+# <tính năng> — head <repo>@<sha> · base <repo>@<sha>
+## Yêu cầu        | ID | Yêu cầu | Nguồn | Trạng thái (rõ / hỏi user / chưa cài) |
+## Môi trường     host, DB, cổng, PID, SHA đang chạy, cách reset dữ liệu, cách dừng
+## Bản đồ luồng   | ID | Actor | Điểm vào | Trạng thái | Kết quả + tác dụng phụ | Yêu cầu |
+## Ca             | ID | Luồng | Lớp | Dữ liệu + thao tác | Oracle | Kết quả | Bằng chứng |
+## Lớp không áp dụng   mỗi dòng: lớp — vì sao
+## Lỗi và câu hỏi
+```
+
+## Flow
+
+### 1. Hiểu yêu cầu
+
+Đọc lời user, issue/AC, tài liệu liên quan, và diff nếu có (`git diff <base>...<head>`; MR GitLab xem [references/publish-gitlab.md](references/publish-gitlab.md) § Lấy MR). Viết lại thành: tính năng làm gì, cho ai, "đúng" nghĩa là gì quan sát được ở đâu. Tách thành các mục `R` kiểm được, mỗi mục một kết quả. Đối chiếu hai chiều: yêu cầu nào chưa có code cài (ghi `chưa cài`), và phần nào của diff không thuộc yêu cầu nào (hoặc là hồi quy phải giữ, hoặc là câu hỏi). Fix bug thì yêu cầu gồm cả "lỗi cũ không còn" lẫn "hành vi đúng xung quanh vẫn giữ"; refactor thì yêu cầu là "hành vi giống base".
+
+Chỗ hai cách hiểu hợp lý cho ra hai kết quả khác nhau: hỏi user, kèm hai cách hiểu và đề xuất của bạn. Trong lúc chờ, làm tiếp phần không phụ thuộc câu hỏi.
+
+Xong khi: mọi mục `R` có nguồn và trạng thái; mọi file trong diff thuộc ít nhất một `R` hoặc có lý do; câu hỏi mở đã gửi user.
+
+### 2. Bản đồ luồng
+
+Đọc [references/test-design.md](references/test-design.md) § Bản đồ luồng. Liệt kê mọi actor/vai trò, mọi điểm vào (UI, API, CLI, job, webhook, import, event…) và mọi trạng thái dữ liệu/thực thể mà thay đổi phân nhánh theo; ghép thành luồng, mỗi luồng ghi kết quả và tác dụng phụ. Thêm luồng **ngoài phần sửa nhưng bị ảnh hưởng**: tìm mọi nơi gọi hàm, bảng, API, config bị đổi.
+
+Có kênh hỏi user thì cho họ xem bản đồ và phạm vi (trong / ngoài) trước khi chạy; sửa một luồng ở bước này rẻ hơn nhiều so với sau khi đã chạy.
+
+Xong khi: mỗi `R` có ít nhất một luồng; mỗi nơi gọi phần bị đổi thuộc một luồng hoặc có lý do loại.
+
+### 3. Thiết kế ca
+
+Đọc phần còn lại của [references/test-design.md](references/test-design.md). Đi qua từng lớp (luồng chính, nhánh rẽ, đầu vào sai và biên, quyền, vòng đời, đồng thời, bất đồng bộ, lỗi phụ thuộc, toàn vẹn dữ liệu, dữ liệu cũ, cấu hình, thời gian, hồi quy, bảo mật, phi chức năng) và viết ca cho mọi luồng mà lớp đó áp dụng; lớp không áp dụng ghi một dòng vì sao. Nhiều điều kiện tổ hợp thì dùng bảng quyết định hoặc ma trận. Mỗi ca có oracle so với nguồn chuẩn, kèm đối chứng.
+
+Fix bug: thêm ca tái hiện lỗi chạy trên base (phải fail ở base), và ca cho các biến thể cùng lớp lỗi. Refactor: ca so sánh hành vi head với base trên cùng đầu vào. Tính năng lớn: xếp ca theo rủi ro, chạy rủi ro cao trước; có thể chia luồng cho các subagent, mỗi subagent nhận luồng + môi trường + phương pháp này.
+
+Xong khi: mỗi luồng có ca; mỗi lớp có ca hoặc dòng lý do; mỗi ca có oracle và đối chứng.
+
+### 4. Chạy thật
+
+Đọc [references/environment.md](references/environment.md) và [references/evidence.md](references/evidence.md). Chạy trên môi trường thật, đúng code đang kiểm (ghi SHA head, và SHA base khi có ca so với base), với dữ liệu test đại diện (rỗng, một, nhiều, dữ liệu cũ, biên), chỉ chạm host test. Mock, stub, `route().fulfill` không chứng minh được hành vi của hệ thật: chúng chỉ minh hoạ, ca dựa trên mock không được tính là đạt. Ghi kết quả từng ca vào `VERIFY.md` ngay khi chạy xong, kèm đường dẫn bằng chứng.
+
+Xong khi: mọi ca có kết quả `đạt` / `hỏng` / `không chạy được (lý do)`, mỗi `đạt` có bằng chứng bạn đã mở xem lại.
+
+### 5. Khi ca hỏng
+
+Đọc [references/triage.md](references/triage.md). Một ca hỏng là một lời khẳng định cho tới khi tái hiện được. Phân loại trước khi kết luận: lỗi sản phẩm, có sẵn ở base, lỗi harness, môi trường, hay cần user quyết định. Lỗi sản phẩm ghi bước tái hiện và `file:line` nghi ngờ. User đã yêu cầu sửa thì sửa theo triage.md § Sửa, rồi chạy lại mọi ca bị ảnh hưởng trên SHA mới; chưa yêu cầu thì báo.
+
+Xong khi: mọi ca hỏng thuộc đúng một loại và đã được xử lý theo loại đó.
+
+### 6. Còn thiếu gì
+
+Bộ ca chỉ tốt bằng bản đồ luồng. Sau khi chạy, dùng sản phẩm thật như người dùng tò mò: đi các đường lân cận, đổi thứ tự thao tác, quay lại giữa chừng, mở hai tab, xem log và DB sau mỗi thao tác. Tính năng lớn thì giao một subagent mới, chỉ đưa yêu cầu + diff + cách vào môi trường (không đưa bản đồ hay danh sách ca), bảo nó tự liệt kê luồng; so danh sách của nó với bản đồ. Luồng mới tìm thấy: thêm vào bản đồ, thiết kế ca, chạy (bước 3–5). Lặp tới khi một lượt không ra luồng mới.
+
+Xong khi: lượt khám phá gần nhất không thêm luồng nào.
+
+### 7. Báo cáo
+
+Báo cáo cho user (và `VERIFY.md` là bản đầy đủ): bảng *yêu cầu → luồng → ca → kết quả → bằng chứng*; cái gì đạt, hỏng, chưa kiểm được và vì sao; lỗi tìm thấy (đã sửa thì kèm commit); câu hỏi chưa chốt; SHA đã kiểm; tiến trình còn để lại; đường dẫn workspace. Yêu cầu chỉ được gọi là đạt khi mọi ca của nó đã chạy và đạt; phần chưa chạy ghi là chưa kiểm, kể cả khi code trông đúng, vì người đọc báo cáo sẽ hành động dựa trên chữ "đạt". User yêu cầu đăng lên MR GitLab thì theo [references/publish-gitlab.md](references/publish-gitlab.md).
+
+Xong khi: mỗi `R` có kết luận đạt / hỏng / chưa kiểm, và mỗi kết luận trỏ tới ca và bằng chứng.
+
+## Nguyên tắc cứng
+
+- **Bằng chứng là file thật, và bạn tự mở xem lại.** Output trên terminal có thể bị wrapper rút gọn; ảnh có thể chụp trúng spinner hay trang lỗi. Chỉ file đã mở lại mới cho bạn biết mình thực sự đã thấy gì.
+- **Bằng chứng không chứa bí mật.** File bằng chứng thường được chia sẻ, đăng lên MR, giữ lâu; dùng tên biến (`$TOKEN`) thay giá trị, và che token/mật khẩu trong output trước khi lưu.
+- **Chỉ chạm host test.** Một ca phá hỏng có chủ ý chạy nhầm production là sự cố thật; host test lấy từ lời user, tài liệu repo chỉ là gợi ý cần user xác nhận.
+- **Dọn những gì mình bật.** Server, worker, worktree tạm còn chạy sẽ giữ cổng, ăn RAM và làm lần chạy sau đọc nhầm phiên bản. Trước khi kết thúc, dừng theo PID/cổng đã ghi, hoặc báo user URL + PID của cái cố ý để lại.
+
+## Công cụ tuỳ chọn (`<skill-dir>/scripts/`)
+
+`<skill-dir>` là thư mục chứa file này; gọi bằng đường dẫn tuyệt đối, xem tham số bằng `--help` hoặc comment đầu file. Dùng khi thấy có ích, không bắt buộc.
 
 | Script | Dùng để |
 |---|---|
-| `ledger.py` | `add` ghi bản ghi (từ chối bản ghi sai schema; `--supersede` thay tiêu chí, `--force` bỏ qua kiểm tra chính sách); `check` ra green/red; `table` sinh bảng báo cáo; `status` đếm theo vòng và trạng thái lỗi; `coverage` tìm file trong diff chưa có tiêu chí; `blank` bắt ảnh trắng |
-| `capture.sh` | chạy một lệnh (curl, SQL, test), lưu output đầy đủ + SHA repo + `exit=` vào file bằng chứng, che bí mật |
-| `evidence.mjs` | Playwright: `settle()` chờ render xong, `shot()` chụp kèm nhãn SHA, `card()` biến output API/SQL thành ảnh before/after |
-| `gl_evidence.py` | kiểm head SHA của MR, upload ảnh (chỉ trong `shots/` và `logs/` của workspace), tạo hoặc sửa đúng một note/khối mô tả |
-
-`<skill-dir>` là thư mục chứa file SKILL.md này (vd `~/.claude/skills/pr-verify`); gọi script bằng đường dẫn tuyệt đối. Tham số: `--help` của `ledger.py`, `capture.sh`, `gl_evidence.py`; comment đầu file và JSDoc từng hàm của `evidence.mjs`.
-
-Cần có: git, bash ≥ 3, python3 ≥ 3.8; `glab` đã `glab auth login --hostname <host GitLab>` (đủ mới để có `glab api --form`); Node + Playwright trong project harness cho kiểm thử UI (`npm i -D @playwright/test && npx playwright install chromium` nếu repo chưa có). Kiểm trên Linux (`systemd-run`, `fuser`). Chỉ hỗ trợ GitLab MR.
-
-## Quyền hạn và điểm dừng
-
-Gọi `pr-verify` là cho phép: dựng môi trường test, tạo dữ liệu test, sửa code trên nhánh nguồn của MR và **commit cục bộ** từng bản sửa đã kiểm chứng. `git push` và đăng/sửa comment hay mô tả MR cần lời user: có sẵn trong yêu cầu (vd "…rồi push và đăng MR"), hoặc hỏi khi tới bước 8.
-
-Khi được phép push, chỉ push vào **nhánh nguồn của MR** (cột `source→target` trong `GOAL.md`): `git push origin HEAD:<source_branch>`, và trước đó kiểm `git rev-parse --abbrev-ref HEAD` trùng `<source_branch>`. Cổng `--expect-sha` của `gl_evidence.py` phát hiện việc push sai nhánh *sau khi* đã push, không ngăn được commit rác đã lên nhánh đích.
-
-Câu hỏi cho user có hai mốc: cuối bước 2 và cuối mỗi lần triage. Câu hỏi nghiệp vụ ghi thành issue `needs-decision` (kèm hai cách hiểu và đề xuất). Trong lúc chờ, vẫn chạy các tiêu chí không phụ thuộc câu hỏi. Khi user trả lời, ghi issue `decided` và trích lời user. Chạy không có kênh tới user (subagent, workflow) thì để câu hỏi vào báo cáo cuối — **nghiệm thu chưa xong**: `needs-decision` làm `ledger.py check` đỏ, nên báo cáo phải nói rõ phần nào chưa nghiệm thu, không được coi là xong.
-
-Dừng hẳn và báo user khi: bước tiếp theo chạm host chưa có trong danh sách host test của `GOAL.md`; hết **5 vòng** (tính cả vòng cuối) mà vẫn *red*.
-
-Lối thoát khi **không có môi trường test**: tiêu chí nào không thể chạy được ghi `verdict: "SKIP"` kèm `approved_by_user` là trích lời user, và `note` nói rõ vì sao. SKIP không dùng cho tiêu chí `baseline` (tiêu chí đó luôn cần ảnh "before" thật), và ledger vẫn đỏ nếu còn SKIP chưa được duyệt.
-
-## Các bước
-
-### 1. Intake
-
-Tạo workspace `${PR_VERIFY_HOME:-$HOME/.pr-verify}/<slug>/` (slug = tên nhánh nguồn chung, hoặc `<project>-<iid>`): `git init`, thư mục `intake/ shots/ logs/ harness/ report/` (mỗi thư mục một `.gitkeep`), và một `.gitignore` tối thiểu:
-
-```
-*.env
-.env*
-secrets/
-*.pem
-```
-
-Mọi file ghi trong workspace nằm ở **gốc workspace** trừ khi nói khác: `GOAL.md`, `COVERAGE.md`, `ENV.md`, `REVIEW.md`, `ledger.jsonl`; ảnh và log trong `shots/r<N>/`, `logs/r<N>/`; bản báo cáo đăng lên MR trong `report/`.
-
-Với mỗi MR, lưu `glab mr view <iid> -R <group/project> -F json` và `glab mr diff <iid> -R <group/project>` vào `intake/<repo>-<iid>.{json,diff}`. Trên GitLab self-hosted phải chọn host: `export GITLAB_HOST=<host>` (hoặc dùng `glab api --hostname <host> ...`), vì `-R` chỉ chọn *project*, không chọn host. User không đưa iid thì tìm MR theo nhánh nguồn, ghi MR đã chọn và MR đã loại (kèm lý do) trong `GOAL.md`. Đọc issue liên kết: `#N` không có tiền tố thuộc project của chính MR đó.
-
-Ghi `GOAL.md`:
-- mục tiêu một câu, lấy từ lời user;
-- bảng repo: `tên (dùng trong ledger) | đường dẫn clone | project | iid | source→target | base SHA | head SHA`. Base SHA = `git merge-base <head> origin/<target>`; khác `diff_refs.base_sha` của MR thì ghi cả hai;
-- trong/ngoài phạm vi;
-- danh sách host/DB test, kèm nguồn xác nhận (lời user, hoặc doc của repo gọi đó là môi trường test).
-
-Ghi mỗi repo vào ledger: `{"kind":"repo","name":…,"path":…,"project":…,"mr":…,"base":…,"dirty_ok":[…]}`. Clone local phải ở đúng head SHA của MR, và cây sạch ngoài `dirty_ok` (config môi trường local). `dirty_ok` chỉ được liệt kê **file config cục bộ**; `ledger.py` từ chối glob rộng (`*`, `*.py`, …) và `check` báo đỏ nếu có file **source code** sửa mà chưa commit — code đang chạy phải là code trong SHA đã ghi.
-
-Xong khi: `GOAL.md` đủ các mục trên; ledger có bản ghi `repo` cho mọi repo; `git -C <clone> rev-parse HEAD` khớp head SHA của từng MR.
-
-### 2. Tiêu chí
-
-Đọc [references/criteria.md](references/criteria.md). Suy ra tiêu chí từ mục tiêu, diff và issue, phủ mọi lớp luồng mà tính năng chạm tới, rồi ghi bằng `ledger.py add -f`. Viết `COVERAGE.md`: mỗi file trong diff có một dòng (hoặc một glob cho thay đổi cơ học), trỏ tới tiêu chí hoặc ghi lý do. Thêm mục "Lớp luồng" ghi lớp nào không áp dụng và vì sao.
-
-Xong khi: `ledger.py --ws <ws> coverage --diff <repo>=intake/<repo>-<iid>.diff …` báo 0 gap; mọi câu hỏi mở đã thành issue `needs-decision` và đã hỏi user (mốc 1).
-
-### 3. Môi trường
-
-Đọc [references/environment.md](references/environment.md). Dựng app cho head SHA. Dựng thêm phía base khi có tiêu chí `baseline` hoặc khi triage cần xác minh "có sẵn ở nhánh đích" — phía base dùng worktree **ngoài** clone và DB/schema riêng, xem environment.md. Ghi `ENV.md`: mỗi app gồm cổng, PID/unit, SHA, file config đã đọc, host/DB mà nó kết nối, cách reset dữ liệu test, cách dừng.
-
-Xong khi: mỗi app có `logs/env-<app>.txt` (health check qua `capture.sh`) trên đúng SHA đã ghi, và mọi host/DB trong `ENV.md` nằm trong danh sách host test của `GOAL.md`.
-
-### 4. Vòng N: chạy và ghi bằng chứng
-
-Đọc [references/evidence.md](references/evidence.md). Viết harness trong `harness/`: ưu tiên framework E2E repo đã có, không có thì dùng Playwright Test (`npm i -D @playwright/test && npx playwright install chromium`, rồi `npx playwright test`). Harness chạy với **CWD = workspace** (`shot()` và `capture.sh` ghi đường dẫn tương đối theo CWD). Chạy các tiêu chí cần chạy ở vòng N. Mỗi tiêu chí ghi một bản ghi `result` gồm `round`, `verdict`, `evidence`, `commits` (SHA thật của mọi repo trong `repos`), và `side: base` cho phía before. Với `side: base`, `commits` là **base SHA** (`repo["base"]`), không phải HEAD. Commit workspace sau mỗi vòng.
-
-Xong khi: mọi tiêu chí cần chạy ở vòng N có `result` của vòng N, và bạn đã mở ít nhất một ảnh của mỗi PASS.
-
-### 5. Triage
-
-Phân loại mọi FAIL/BLOCKED theo bảng ở [references/triage.md](references/triage.md), xử lý theo loại, rồi hỏi user các `needs-decision` mới (mốc 2).
-
-Xong khi: mọi FAIL/BLOCKED đã thuộc đúng một loại, và mỗi lỗi sản phẩm có issue `open` kèm `repro` (bước tái hiện) và `suspect` (`file:line` nghi ngờ).
-
-### 6. Fix
-
-Sửa từng issue `open` trong phạm vi theo triage.md § Fix.
-
-Xong khi: mọi issue là `fixed` (có `fix_commit`), `decided` (có `decision` và `decided_by`) hoặc `out-of-scope` (có `reason`). Issue `needs-decision` **chưa tính là xong**: nó làm `ledger.py check` đỏ, nên phải hỏi được user và chuyển sang `decided` trước khi qua bước 7.
-
-### 7. Lặp tới green
-
-Theo triage.md § Vòng sau: dựng lại app có code đổi, quay lại bước 4 với vòng N+1. Theo dõi tiến độ giữa các vòng bằng `ledger.py --ws <ws> check --progress`. Khi `--progress` đã green: chạy **vòng cuối** (mọi tiêu chí trên HEAD cuối), rồi phản biện độc lập theo triage.md § Phản biện độc lập. Phản biện bác PASS nào thì quay về bước 5.
-
-Xong khi: `python3 <skill-dir>/scripts/ledger.py --ws <ws> check` in **GREEN (final)**.
-
-### 8. Báo cáo và đăng MR
-
-Đọc [references/report.md](references/report.md). Sinh mô tả và comment bằng chứng cho **từng** MR từ ledger, rồi chạy `gl_evidence.py --dry-run`. Khi đã có lời user: push đúng nhánh nguồn (`git push origin HEAD:<source_branch>`), đăng bằng `gl_evidence.py --expect-sha <head SHA trong ledger>`, mở MR trong trình duyệt đã đăng nhập và nhìn thấy mọi ảnh hiển thị. Chưa có lời user thì dừng ở dry-run và đưa user lệnh đăng. Đường dẫn ảnh trong body phải nằm trong `shots/` hoặc `logs/` của workspace; tên file có khoảng trắng thì bọc trong `<...>`.
-
-Xong khi: mỗi MR có mô tả và đúng một comment bằng chứng với mọi ảnh hiển thị; hoặc user đã nhận bản dry-run và lệnh đăng.
-
-### 9. Dọn dẹp
-
-Xong khi: mọi PID/unit/cổng trong `ENV.md` đã dừng (cách dừng: environment.md § Chạy bền) hoặc đã báo user URL + PID của cái để lại; worktree tạm cho phía base đã gỡ.
-
-## Báo cáo cuối cho user
-
-Nêu đủ các mục:
-- output `ledger.py check` nguyên văn và bảng `ledger.py table`;
-- số vòng đã chạy;
-- lỗi đã sửa, kèm commit;
-- lỗi và rủi ro còn lại, câu hỏi chưa chốt;
-- link từng MR, hoặc lệnh đăng nếu chưa đăng;
-- phần chưa chạy được và lý do;
-- tiến trình còn để lại;
-- đường dẫn workspace.
-
-`ledger.py check` không in **GREEN (final)** thì nghiệm thu **chưa đạt**: báo cáo phải nói rõ tiêu chí nào chưa đạt và vì sao, không dùng cách nói "đã nghiệm thu" cho phần chưa xanh.
+| `capture.sh` | chạy một lệnh (curl, SQL, CLI, test), lưu output đầy đủ + SHA repo + exit code vào file, che bí mật |
+| `evidence.mjs` | Playwright: `settle()` chờ màn hình render xong, `shot()` chụp kèm nhãn SHA, `card()` biến output text thành ảnh before/after |
+| `gl_evidence.py` | đăng báo cáo có ảnh lên MR GitLab, xem publish-gitlab.md |

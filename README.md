@@ -1,26 +1,27 @@
 # pr-verify
 
-An agent skill for end-to-end acceptance testing ("nghiệm thu") of a feature that spans one or more **GitLab** merge requests.
+An agent skill for acceptance testing ("nghiệm thu") a change by running every flow it touches against a real environment, with evidence. It works for a new feature, a requirement, a bug fix or a refactor; for a web UI, an API, a background job, a CLI or a library; whether the input is a merge request, a branch, or a requirement in plain words.
 
-Give it the feature's goal and the MRs. The agent then:
+The skill is a testing method, not a harness. It walks the agent through one flow:
 
-1. derives acceptance criteria from the goal, the diffs and linked issues, covering every flow the change touches (main flow, roles/permissions, bad input, dependency failures, data integrity, legacy data, config modes, regressions, security);
-2. runs them against a real environment on the pinned head SHA, plus the base SHA for before/after on criteria that change existing behaviour;
-3. records every result with real evidence (screenshots, API and SQL captures) in an append-only ledger;
-4. triages failures, fixes product bugs with a regression test that is red first, and re-runs in rounds until `ledger.py check` reports **GREEN (final)**. Green requires a final round that re-runs every criterion on the final HEAD, plus an independent review that refutes nothing;
-5. posts a description block and one evidence comment, with screenshots uploaded to the right project, on each MR. Pushing and posting happen only when you say so.
+1. **Understand the requirement**: what the change must do, for whom, and what "correct" means; split it into checkable items, surface requirements the code does not implement yet, ask about ambiguities.
+2. **Map the flows**: actors/roles × entry points (UI, API, CLI, job, webhook, import…) × data states → outcome and side effects, including callers outside the diff that the change affects.
+3. **Design test cases** layer by layer: main flow, branches, bad input and boundaries, permissions, lifecycle and state transitions, concurrency and idempotency, async work, dependency failures, data integrity, legacy data and migrations, configuration, time zones, regressions, security, non-functional limits. Bug fixes are reproduced on the base first; refactors are compared with the base.
+4. **Run for real** on the pinned SHA, with representative test data, touching only test hosts; every case has an oracle drawn from a source of truth and shown able to fail.
+5. **Triage failures** (product bug, pre-existing, harness, environment, needs a decision). Code is changed only when the user asked for fixes.
+6. **Look for what is missing**: explore the running product, and for large features have a fresh subagent list flows from the requirement and diff alone, until no new flow turns up.
+7. **Report honestly**: requirement → flow → case → result → evidence; nothing unrun is called passing.
+
+Results live in a plain Markdown file (`VERIFY.md`) in the workspace. Publishing to a GitLab MR is an optional extra.
 
 The skill's instructions are written in Vietnamese; the scripts and their `--help` are in English.
-
-> GitLab only: publishing uses `glab`. GitHub pull requests are not supported.
 
 ## Requirements
 
 - git, bash ≥ 3, python3 ≥ 3.8 (scripts use the standard library only)
-- [`glab`](https://gitlab.com/gitlab-org/cli) authenticated to your GitLab host (`glab auth login --hostname <host>`), recent enough to support `glab api --form`
-- Node + Playwright in the project that holds your test harness, for `scripts/evidence.mjs`
-- Linux recommended: the environment guide uses `systemd-run --user`, `journalctl` and `fuser`; `capture.sh` uses GNU `date -Iseconds`
-- An agent that can spawn a subagent (for the independent review step)
+- Optional: Node + Playwright in the project that holds your test harness, for `scripts/evidence.mjs`
+- Optional: [`glab`](https://gitlab.com/gitlab-org/cli) authenticated to your GitLab host, recent enough to support `glab api --form`, to publish to a merge request
+- Linux recommended: the environment guide uses `systemd-run --user` and `fuser`; `capture.sh` uses GNU `date -Iseconds`
 
 ## Install
 
@@ -36,11 +37,11 @@ In the docs, `<skill-dir>` means this folder.
 
 Ask your agent, for example:
 
-> nghiệm thu MR group/api!12 và group/web!34: admins can restrict each menu by role
+> nghiệm thu tính năng mã giảm giá trên nhánh feat/discount
 
-or
+> kiểm tra bản fix bug job gửi email nhắc hạn bị gửi trùng
 
-> verify feature X end to end with evidence
+> verify MR group/api!12 end to end
 
 The workspace defaults to `$HOME/.pr-verify/<slug>/`; override it with `PR_VERIFY_HOME`.
 
@@ -48,16 +49,15 @@ The workspace defaults to `$HOME/.pr-verify/<slug>/`; override it with `PR_VERIF
 
 | Path | What |
 |---|---|
-| `SKILL.md` | The process: 9 steps, each with a completion criterion |
-| `references/criteria.md` | Deriving criteria, flow classes, `COVERAGE.md` |
-| `references/environment.md` | Pinning SHAs, data safety, long-running processes |
-| `references/evidence.md` | Evidence standards for UI, API, DB |
-| `references/triage.md` | Classifying failures, the fix loop, the final round, independent review |
-| `references/report.md` | MR description and evidence comment templates, publishing |
-| `scripts/ledger.py` | Ledger: `add` (`--supersede`, `--force`), `check` (GREEN/RED, `--progress`), `table`, `status`, `coverage`, `blank` |
-| `scripts/capture.sh` | Run a command and keep stamped, secret-masked output as evidence |
-| `scripts/evidence.mjs` | Playwright helpers: `settle`, `shot` (SHA stamp), `card` (API/SQL as image) |
-| `scripts/gl_evidence.py` | Check the MR head SHA, upload images from the workspace (`--workspace`, `--allow-any`), create or update one note or description block |
+| `SKILL.md` | The method: seven steps, each with a completion criterion, and the hard rules |
+| `references/test-design.md` | Flow map, test layers, case design techniques, oracles, bug fixes and refactors, examples |
+| `references/environment.md` | Pinning SHAs, data safety, long-running processes, health checks |
+| `references/evidence.md` | What evidence looks like for UI, API, DB, jobs, CLIs and libraries |
+| `references/triage.md` | Classifying failures, fixing (when asked), re-running |
+| `references/publish-gitlab.md` | Optional: reading a GitLab MR, posting results with screenshots |
+| `scripts/capture.sh` | Optional: run a command and keep stamped, secret-masked output as evidence |
+| `scripts/evidence.mjs` | Optional Playwright helpers: `settle`, `shot` (SHA stamp), `card` (text output as image) |
+| `scripts/gl_evidence.py` | Optional: check the MR head SHA, upload workspace images, create or update one note or description block |
 | `agents/openai.yaml` | Codex UI metadata |
 
 See [CREDITS.md](CREDITS.md) for the ideas this builds on.

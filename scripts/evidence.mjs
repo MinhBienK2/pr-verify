@@ -1,14 +1,14 @@
 // pr-verify evidence helpers for Playwright (Page from `playwright` or `@playwright/test`).
 //
 //   import { settle, shot, card } from '<skill-dir>/scripts/evidence.mjs'
-//   await shot(page, 'shots/r1/C03-after-admin-menu.png', {
-//     stamp: 'C03 · after · web@1a2b3c4',
+//   await shot(page, 'shots/T03-head-admin-menu.png', {
+//     stamp: 'T03 · head · web@1a2b3c4',
 //     settleOpts: { ready: 'table tbody tr' },   // what "data has arrived" looks like on this screen
 //   })
 //
 // No dependencies of its own: it only calls methods on the page you pass in.
 // Every failure throws. Let it throw: a `.catch(() => {})` around these calls turns a
-// missing screenshot into a PASS without evidence.
+// missing screenshot into a passing case without evidence.
 
 const BUSY = [
   '[aria-busy="true"]',
@@ -98,12 +98,12 @@ export async function settle(page, opts = {}) {
 
 /**
  * settle() then screenshot to `path`.
- * `stamp` draws a label in the top-right corner for the capture only (criterion id,
- * before/after, commit) so a reviewer knows what build the picture is from. It stays inside the
- * corner that `ledger.py` skips when detecting blank screenshots (top 32px, right half).
+ * `stamp` draws a label in the top-right corner for the capture only (test case id,
+ * base/head, commit) so a reviewer knows what build the picture is from. It stays small
+ * (top 32px, at most half the width) so it never hides the content being proven.
  * `intentionalBlank: true` is for evidence of a broken/blank screen: it skips the content
  * requirement and turns the stamp red with "INTENTIONAL BLANK".
- * `mock: true` adds "MOCK" to the stamp: the picture illustrates, it cannot accept a criterion.
+ * `mock: true` adds "MOCK" to the stamp: the picture illustrates, it cannot prove a test case.
  * For lazy-loaded pages, scroll to the bottom and back before calling shot() with fullPage.
  */
 export async function shot(page, path, opts = {}) {
@@ -135,10 +135,10 @@ export async function shot(page, path, opts = {}) {
 /**
  * Render non-UI evidence (API response, SQL result, log excerpt) as a readable image,
  * optionally BEFORE | AFTER side by side, for reviewers who only look at pictures.
- *   await card(page, 'shots/r2/C05-card.png', {
- *     title: 'C05 · locked account ⇒ /me returns 403',
- *     before: { label: 'api@0ld0000', text: fs.readFileSync('logs/r2/C05-before.txt', 'utf8') },
- *     after:  { label: 'api@abc1234', text: fs.readFileSync('logs/r2/C05-after.txt', 'utf8') },
+ *   await card(page, 'shots/T05-card.png', {
+ *     title: 'T05 · locked account ⇒ /me returns 403',
+ *     before: { label: 'api@0ld0000', text: fs.readFileSync('logs/T05-base.txt', 'utf8') },
+ *     after:  { label: 'api@abc1234', text: fs.readFileSync('logs/T05-head.txt', 'utf8') },
  *   })
  * Pass `after` alone for a single panel. Text is shown verbatim (monospace, escaped); feed it
  * the evidence file written by capture.sh, so the picture and the log say the same thing.

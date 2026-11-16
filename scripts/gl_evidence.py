@@ -186,7 +186,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if not a.dry_run and not a.expect_sha:
-        raise RuntimeError("--expect-sha is required to publish (the head sha in ledger.jsonl for this repo)")
+        raise RuntimeError("--expect-sha is required to publish (the head sha of the last verification run for this repo)")
 
     host, path = remote(a.repo)
     gl = GL(host, path)

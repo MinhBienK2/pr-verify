@@ -1,59 +1,36 @@
-# Chuẩn bằng chứng
+# Bằng chứng
 
-Người review không chạy lại được; họ chỉ tin cái họ nhìn thấy. Mỗi PASS cần bằng chứng mà một người hoài nghi đọc xong cũng phải đồng ý.
+Người đọc báo cáo không chạy lại được; họ chỉ tin cái họ thấy. Mỗi ca `đạt` cần bằng chứng mà một người hoài nghi đọc xong cũng phải đồng ý, và bạn là người hoài nghi đầu tiên.
 
-## Quy tắc chung
+## Chung cho mọi loại sản phẩm
 
-- Bằng chứng là **file** trong `shots/r<N>/` hoặc `logs/r<N>/` của workspace, ghi **đường dẫn tương đối theo gốc workspace** (vd `shots/r1/C01-after.png`) vào `evidence` của `result` (ledger từ chối đường dẫn ngoài hai thư mục này). Output trên terminal có thể bị wrapper rút gọn hoặc tóm tắt, nên luôn đọc lại từ file.
-- **Tên file không có khoảng trắng** — dùng dấu gạch nối (`C01-after-admin-orders.png`). Đường dẫn có khoảng trắng phải bọc trong `<...>` khi nhúng vào Markdown; `gl_evidence.py` báo lỗi nếu gặp đường dẫn local có khoảng trắng không bọc, vì Markdown sẽ không upload và sẽ đăng ảnh hỏng lên MR.
-- `shot()` và `capture.sh` ghi đường dẫn tương đối theo **CWD** — chạy harness với CWD = workspace.
-- Mỗi bằng chứng biết nó chụp trên SHA nào: nhãn trên ảnh (`shot({stamp})`), dòng `# repo … sha=` (`capture.sh --repo`), trường `commits` trong ledger.
-- Tên file: `<id>-<before|after>-<mô-tả-ngắn>.<ext>`, ví dụ `C07-after-locked-user-403.txt`.
-- Before và after chạy **cùng một kịch bản**, chỉ khác SHA. Bản ghi `side: "base"` ghi `commits` là **base SHA**, và `ledger.py check` đối chiếu nó với `repo["base"]`; ảnh "before" và "after" phải là hai file khác nhau.
-- Bằng chứng dựng từ response giả lập (`page.route().fulfill`, stub, mock): ghi `"mock": true` trên result và chụp với `shot({mock: true})`. Ledger từ chối PASS có cờ này: mock chỉ để minh hoạ.
-- **Bằng chứng không chứa bí mật.** Chỉ ghi tên biến (`${TOKEN_LOCKED}`), không ghi giá trị. `ledger.py check` quét file text và báo đỏ nếu thấy `tên_bí_mật = giá_trị`.
+- Bằng chứng là file trong `shots/` (ảnh) hoặc `logs/` (text) của workspace, ghi vào cột Bằng chứng của `VERIFY.md` bằng đường dẫn tương đối theo gốc workspace.
+- Tên file: `<ca>-<base|head>-<mô-tả-ngắn>.<ext>`, không khoảng trắng (vd `T07-head-locked-user-403.txt`). Chạy lại sau khi sửa thì thêm thư mục con theo lần chạy (`logs/run2/`) thay vì ghi đè.
+- Mỗi bằng chứng ghi nó được tạo trên SHA nào: nhãn trên ảnh, dòng đầu của file log, hoặc cột trong `VERIFY.md`.
+- Ca so với base: cùng kịch bản, cùng dữ liệu đầu vào, chỉ khác SHA; hai file riêng.
+- Lưu cả câu lệnh/thao tác, không chỉ kết quả: người khác phải tái lập được.
+- Mở lại file sau khi ghi. Ảnh có thể là trang đăng nhập, spinner, trang lỗi có màu; log có thể là lỗi kết nối với exit 0.
+- Không chứa bí mật: tên biến thay giá trị; che token, cookie, mật khẩu, chuỗi kết nối trong output trước khi lưu. `scripts/capture.sh` làm việc này cho output lệnh.
 
-## UI
+## Theo loại
 
-```js
-import { shot, card } from '<skill-dir>/scripts/evidence.mjs'
-await page.goto(APP + '/orders')
-await shot(page, `shots/r${R}/C05-after-admin-orders.png`, {
-  stamp: `C05 · after · web@${SHA}`,
-  settleOpts: { ready: 'table tbody tr' },
-})
-```
+**Web UI.** Ảnh chụp đủ ngữ cảnh (URL, người dùng/vai trò đang đăng nhập, vùng liên quan), sau khi dữ liệu đã về chứ không phải sau khi trang load. `scripts/evidence.mjs` có `shot()` chờ `settle()` (network yên, selector `ready` xuất hiện, nội dung ổn định, không spinner) rồi chụp kèm nhãn SHA; luôn truyền `ready` mô tả "dữ liệu đã về" của màn hình đó, và để lỗi của nó nổi lên thay vì bọc `.catch()`. Thu `console` error và response ≥ 400 của trang vào `logs/`: chúng thường là bằng chứng hỏng tốt hơn ảnh. Màn hình bị chặn/trống đúng như mong đợi cũng là bằng chứng (`shot(…, { intentionalBlank: true })`). Luồng nhiều bước mà ảnh rời không kể được (kéo thả, race bấm hai lần): giữ trace/video.
 
-- `shot()` chờ `settle()`: network yên, `ready` thoả, nội dung trang ổn định khoảng 2 giây, không còn skeleton/spinner/ảnh đang tải trong khung nhìn, trang có nội dung. Hết giờ thì nó **ném lỗi**: để lỗi nổi lên, vì `.catch(() => {})` quanh nó biến một ảnh thiếu thành PASS không bằng chứng.
-- Luôn truyền `ready` (selector hoặc hàm) mô tả "dữ liệu đã về" của màn hình đó: dữ liệu về muộn mà không có spinner thì chỉ `ready` bắt được. Trang có loading riêng thì thêm `busySelectors`.
-- Trang có **text biến động** (đồng hồ, bộ đếm, timestamp): `settle()` mặc định bỏ qua chữ số khi so sánh ổn định (`ignoreDigits`), và có thể loại vùng đó bằng `ignoreSelectors: ['.clock']`. Nếu không, trang đó không bao giờ settle và `shot()` không ghi được ảnh.
-- Lazy-load / carousel: cuộn xuống cuối rồi lên đầu, đưa carousel về slide đầu trước khi chụp `fullPage`.
-- Màn hình trắng/403 **là** bằng chứng: `shot(page, p, { intentionalBlank: true, stamp })` ghim nhãn đỏ, và `note` của result chứa `intentional-blank`.
-- Ảnh cho người đọc: chụp đủ ngữ cảnh (menu, URL, tên người dùng/vai trò), không chỉ một ô. Toast/thông báo thoáng qua: chờ nó hiện rồi chụp ngay, thêm ảnh riêng phần tử nếu nhỏ.
-- `ledger.py check` bắt ảnh trắng và ảnh trùng byte giữa hai tiêu chí (thường là trang lỗi/redirect giống nhau). Trang lỗi có màu (banner đỏ, trang 404 có header) thì máy không bắt được: mở ảnh và nhìn.
-- Bắt `console` error và response ≥ 400 của trang (`page.on('console')`, `page.on('response')`) vào `logs/`; chúng thường là bằng chứng FAIL tốt hơn ảnh.
-
-## API
+**API.** Request (method, URL, vai trò/credential dùng, body), status, header liên quan, body response. Ví dụ:
 
 ```bash
-export TOKEN_LOCKED=…   # biến môi trường, không viết giá trị vào lệnh
-<skill-dir>/scripts/capture.sh logs/r2/C07-after-me-locked.txt --repo api="$API_REPO" --expect-exit 0 -- \
+<skill-dir>/scripts/capture.sh logs/T07-head-me-locked.txt --repo api="$API_REPO" -- \
   curl -sS -i -H "Authorization: Bearer $TOKEN_LOCKED" "$API/api/me"
 ```
 
-Ghi request (method, URL, vai trò dùng), status, header quan trọng, body (rút gọn ở mức vẫn đủ chứng minh). `capture.sh` thay giá trị của biến môi trường có tên chứa PASS/TOKEN/SECRET/KEY bằng tên biến, và che các dạng bí mật quen thuộc trong output.
+**DB.** Câu SQL cùng kết quả, DB nào, thời điểm; trạng thái trước và sau thao tác bằng cùng một câu. Tính đếm/tổng ngay trong SQL. Client dòng lệnh có thể cắt giá trị dài và trả exit 0 khi SQL lỗi: đặt độ rộng đủ, kiểm chuỗi lỗi trong output. Dùng client mà file hướng dẫn agent của máy/repo quy định nếu có.
 
-## DB
+**Job nền, queue, thông báo.** Thời điểm enqueue, log của worker (lọc theo ID của ca), trạng thái cuối trong DB, và thứ người nhận thấy (mailbox test, webhook receiver, file sinh ra). Ghi rõ đã chờ bao lâu và điều kiện chờ (poll tới khi trạng thái đổi, có giới hạn thời gian) — "chờ 5 giây rồi xem" không phân biệt được chậm với không chạy.
 
-- Lưu **câu SQL cùng kết quả** qua `capture.sh`, kèm thời điểm và DB nào. Dùng client truy vấn mà file hướng dẫn agent (AGENTS.md/CLAUDE.md) của repo hoặc của máy quy định, nếu có.
-- Tính đếm/độ dài/tổng ngay trong SQL. Client dòng lệnh có thể cắt hoặc bẻ dòng giá trị dài: đặt độ rộng tối đa (vd `sqlcmd -w 65535 -y 0`, `SET NOCOUNT ON`; MySQL client với charset utf8mb4).
-- Nhiều client trả exit 0 cả khi SQL lỗi: kiểm chuỗi lỗi trong output (vd `Msg <số>`, `ERROR <số>`), coi đó là lỗi harness.
-- Trạng thái trước và sau thao tác: hai lần chạy cùng câu SQL.
+**CLI.** Lệnh nguyên văn, stdout và stderr tách hay gộp (ghi rõ), exit code, file/thư mục bị tạo hoặc sửa (liệt kê, checksum hoặc diff trước/sau). `capture.sh` ghi exit code và SHA.
 
-## Biến API/SQL thành ảnh
+**Thư viện.** Đoạn test hoặc script gọi API public, phiên bản/SHA đã import (in ra từ chính tiến trình test để chắc không import nhầm bản cài sẵn), output của bộ test. Kiểm thuộc tính sinh nhiều đầu vào thì lưu seed và các đầu vào làm fail.
 
-Người review MR thường chỉ lướt ảnh. Với tiêu chí quan trọng ở tầng API/DB, thêm một ảnh `card()`: tiêu đề tiêu chí, panel BEFORE (đỏ) và AFTER (xanh) chứa nội dung file `logs/` tương ứng. `card()` cắt phần text dài quá `maxChars` (mặc định 2000) và ghi rõ trong ảnh là đã cắt; file log gốc vẫn đầy đủ.
+## Biến text thành ảnh (tuỳ chọn)
 
-## Video / trace
-
-Luồng nhiều bước mà ảnh rời không kể được (kéo thả, wizard, race bấm hai lần): bật trace/video của Playwright cho test đó và giữ file trong `logs/`. Trong MR, ảnh vẫn là chính; trace là phụ lục.
+Khi báo cáo đi tới người chỉ lướt ảnh (vd comment trên MR), `card()` trong `evidence.mjs` dựng ảnh từ file log, có thể đặt base và head cạnh nhau. File log gốc vẫn là bằng chứng chính.
