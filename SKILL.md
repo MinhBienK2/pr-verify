@@ -26,7 +26,7 @@ Mặc định skill **kiểm thử và báo cáo**: dựng môi trường test, 
 
 ## Workspace
 
-`${PR_VERIFY_HOME:-$HOME/.pr-verify}/<slug>/`, slug là tên nhánh hoặc tên ngắn của tính năng. Bên trong: `VERIFY.md` (nguồn duy nhất cho yêu cầu, luồng, ca và kết quả), `shots/`, `logs/` (bằng chứng), `harness/` (code test), `report/` (bản đăng lên MR/PR nếu có). `VERIFY.md` là markdown thường; khung gợi ý:
+`${PR_VERIFY_HOME:-$HOME/.pr-verify}/<project>/<slug>/` — `<project>` là họ repo, mỗi họ một thư mục con của `~/.pr-verify/` (`ls ~/.pr-verify/` để biết đã có họ nào; họ mới thì tạo thư mục mới); `<slug>` là tên nhánh hoặc tên ngắn của tính năng. Bên trong: `VERIFY.md` (nguồn duy nhất cho yêu cầu, luồng, ca và kết quả), `shots/`, `logs/` (bằng chứng), `harness/` (code test), `report/` (bản đăng lên MR/PR nếu có). Bằng chứng và harness nằm trong workspace này — worktree repo chỉ chứa code và test đã commit. `~/.pr-verify/review-prv.sh <project>/<slug>` in nhanh workspace (đọc-only). `VERIFY.md` là markdown thường; khung gợi ý:
 
 ```markdown
 # <tính năng> — head <repo>@<sha> · base <repo>@<sha>

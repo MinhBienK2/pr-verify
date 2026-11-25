@@ -43,7 +43,7 @@ Ask your agent, for example:
 
 > verify MR group/api!12 end to end
 
-The workspace defaults to `$HOME/.pr-verify/<slug>/`; override it with `PR_VERIFY_HOME`.
+The workspace defaults to `$HOME/.pr-verify/<project>/<slug>/` (one folder per repo family); override it with `PR_VERIFY_HOME`.
 
 ## Layout
 
